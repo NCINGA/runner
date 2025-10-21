@@ -1,14 +1,17 @@
 package com.ncinga.runner.services;
 
 import com.ncinga.runner.dtos.JobInfo;
-import org.springframework.web.multipart.MultipartFile;
 import reactor.core.publisher.Mono;
 
-import java.util.Map;
-
+/**
+ * @author shehan.salinda@ncinga.net
+ * @date 2025-10-17
+ * This interface use to run job method invoking JobInfo metadata type
+ * @params JobInfo metadata job details
+ * @return Mono job detail (execute id, statue ...etc)
+ * @throw
+ *
+ */
 public interface JobService {
-    Mono<JobInfo> submit(MultipartFile file, JobInfo jobInfo, String joId);
-    Mono<Map<String, Object>> runAllJobs();
-    Mono<JobInfo> executeJob(JobInfo jobInfo);
-
+    Mono<JobInfo> execute(JobInfo jobInfo);
 }

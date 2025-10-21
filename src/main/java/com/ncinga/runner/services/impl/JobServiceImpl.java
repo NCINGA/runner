@@ -1,164 +1,152 @@
 package com.ncinga.runner.services.impl;
 
-import com.ncinga.runner.JobInfoEntity;
 import com.ncinga.runner.dtos.JobInfo;
 import com.ncinga.runner.enums.JobStatus;
-import com.ncinga.runner.repositories.JobInfoRepository;
-import com.ncinga.runner.services.JobRunnerService;
 import com.ncinga.runner.services.JobService;
-import lombok.RequiredArgsConstructor;
+import groovy.lang.GroovyClassLoader;
+import groovy.lang.GroovyObject;
+import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
 import org.yaml.snakeyaml.Yaml;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
+import java.io.FileInputStream;
 import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Arrays;
 import java.util.Map;
 
 @Service
 @Slf4j
-@RequiredArgsConstructor
+@Data
+
+/**
+ * @params jobPath file path for job dir
+ */
+
 public class JobServiceImpl implements JobService {
-    private final JobInfoRepository jobInfoRepository;
-    private final JobRunnerService jobRunnerService;
+
     @Value("${application.job.path}")
     private String jobPath;
 
+
     @Override
-    public Mono<JobInfo> submit(MultipartFile file, JobInfo jobInfo, String jobId) {
-        return Mono.fromCallable(() -> {
-                    String uploadDir = jobPath + "/" + jobInfo.getClient();
-                    Path uploadPath = Paths.get(uploadDir);
-                    if (!Files.exists(uploadPath)) {
-                        Files.createDirectories(uploadPath);
-                    }
-                    Path filePath = uploadPath.resolve(file.getOriginalFilename());
-                    file.transferTo(filePath.toFile());
-                    jobInfo.setSubmitAt(Instant.now());
-                    jobInfo.setJobId(jobId);
-                    jobInfo.setPath(filePath.toAbsolutePath().toString());
+    public Mono<JobInfo> execute(JobInfo jobInfo) {
+        return Mono.defer(() -> {
+            jobInfo.setStatus(JobStatus.RUNNING);
+            jobInfo.setStartedAt(Instant.now());
 
-                    return jobInfo;
-                })
-                .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(updatedJobInfo ->
-                        jobInfoRepository.save(updatedJobInfo.toEntity(JobInfoEntity.class))
-                                .map(saved -> {
-                                    log.info("Job description: {}", updatedJobInfo);
-                                    return JobInfo.fromEntity(saved, JobInfo.class);
-                                })
-                )
-                .flatMap(savedJobInfo ->
-                        jobRunnerService.submitAndRun(savedJobInfo)
-                                .map(executedJobInfo -> {
-                                    log.info("Running : {}", executedJobInfo);
-                                    return executedJobInfo;
-                                })
-                                .onErrorResume(error -> {
-                                    log.error("Job execution failed: {}", error.getMessage());
-                                    return Mono.just(savedJobInfo);
-                                })
-                )
-                .onErrorResume(e -> {
-                    log.error("Error while submitting job", e);
-                    return Mono.error(new RuntimeException("Job submission failed: " + e.getMessage()));
-                });
-    }
+            return Mono.fromCallable(() -> {
+                        String jobId = jobInfo.getClient() + "-" + Instant.now();
+                        File scriptPath = new File(jobPath + "/" + jobInfo.getClient());
+                        jobInfo.setJobId(jobId);
+                        jobInfo.setPath(scriptPath.getPath());
+                        log.info("Job [{}] - Path: {}", jobId, scriptPath.getAbsolutePath());
+                        if (!scriptPath.exists()) {
+                            return fail(jobInfo, "File path not found: " + scriptPath);
+                        }
+                        File[] files = scriptPath.listFiles();
+                        if (files == null || files.length == 0) {
+                            return fail(jobInfo, "Executable files not found in: " + scriptPath);
+                        }
+                        File deploymentFile = Arrays.stream(files)
+                                .filter(f -> f.getName().endsWith("deployment.yml"))
+                                .findFirst()
+                                .orElse(null);
 
-//    @Scheduled(fixedRate = 3000)
-    @Override
-    public Mono<Map<String, Object>> runAllJobs() {
-        return Mono.fromCallable(() -> {
-            File rootFolder = new File(jobPath);
-            if (!rootFolder.exists() || !rootFolder.isDirectory()) {
-                log.warn("Invalid jobs root path: {}", jobPath);
-                return Map.of("error", "Invalid jobs root path: " + jobPath);
-            }
-            List<String> groovyFiles = scanGroovyFiles(rootFolder);
-            groovyFiles.forEach(job -> {
-                try {
-                    JobInfo newJob = validateExecution(job);
-                    if (newJob.getStatus().equals(JobStatus.ACTIVE)) {
-                        newJob.setStartedAt(Instant.now());
-                        log.info("Job running info {}", newJob.toString());
-                        jobRunnerService.run(newJob);
-                    } else if (newJob.getStatus().equals(JobStatus.STOP)) {
-                        log.info("Job stopped {}", newJob.toString());
-                    }
-                } catch (Exception e) {
-                    log.error(e.getMessage());
-                }
-            });
+                        if (deploymentFile == null) {
+                            return fail(jobInfo, "deployment.yml not found in: " + scriptPath);
+                        }
 
-            return Map.of(
-                    "status", "success",
-                    "count", groovyFiles.size(),
-                    "files", groovyFiles
-            );
+                        String deploymentStatus;
+                        String groovyFileName;
+                        try (InputStream inputStream = new FileInputStream(deploymentFile)) {
+                            Yaml yaml = new Yaml();
+                            Map<String, Object> config = yaml.load(inputStream);
+                            deploymentStatus = (String) config.get("status");
+                            groovyFileName = (String) config.get("file-name");
+                            log.info("Deployment config -> status: {}, file-name: {}", deploymentStatus, groovyFileName);
+                        } catch (Exception e) {
+                            log.error("Failed to parse deployment.yml: {}", deploymentFile.getPath(), e);
+                            return fail(jobInfo, "Failed to parse deployment.yml: " + e.getMessage());
+                        }
+
+                        if (!"active".equalsIgnoreCase(deploymentStatus)) {
+                            jobInfo.setStatus(JobStatus.SKIPPED);
+                            jobInfo.setErrorMessage("Job is inactive (status: " + deploymentStatus + ")");
+                            log.info("Job [{}] skipped (inactive)", jobId);
+                            return jobInfo;
+                        }
+
+                        File groovyFile = Arrays.stream(files)
+                                .filter(f -> f.getName().equals(groovyFileName))
+                                .findFirst()
+                                .orElse(null);
+
+                        if (groovyFile == null) {
+                            return fail(jobInfo, "Groovy file not found: " + groovyFileName);
+                        }
+                        File libDir = new File("libs");
+                        File[] jarFiles = libDir.listFiles((dir, name) -> name.endsWith(".jar"));
+                        URL[] urls = new URL[jarFiles == null ? 0 : jarFiles.length];
+                        if (jarFiles != null) {
+                            for (int i = 0; i < jarFiles.length; i++) {
+                                urls[i] = jarFiles[i].toURI().toURL();
+                            }
+                        }
+                        try (
+                                URLClassLoader jarClassLoader = new URLClassLoader(
+                                        urls,
+                                        Thread.currentThread().getContextClassLoader()
+                                );
+                                GroovyClassLoader groovyClassLoader = new GroovyClassLoader(jarClassLoader)
+                        ) {
+                            Class<?> groovyClass = groovyClassLoader.parseClass(groovyFile);
+                            GroovyObject groovyObject = (GroovyObject) groovyClass.getDeclaredConstructor().newInstance();
+
+                            Object[] args = jobInfo.getPrams() != null && !jobInfo.getPrams().isEmpty()
+                                    ? jobInfo.getPrams().values().toArray()
+                                    : new Object[]{};
+
+                            log.info("Invoking {}.{} with args={}",
+                                    jobInfo.getClassName(), jobInfo.getMethod(), Arrays.toString(args));
+
+                            Object result = groovyObject.invokeMethod(jobInfo.getMethod(), args);
+
+                            jobInfo.setStatus(JobStatus.COMPLETED);
+                            jobInfo.setCompletedAt(Instant.now());
+                            if (result != null) {
+                                jobInfo.setResult(result);
+                                log.info("Groovy method result: {}", result);
+                            }
+                            return jobInfo;
+
+                        } catch (Exception e) {
+                            log.error("Groovy method execution failed: {}", groovyFile.getPath(), e);
+                            return fail(jobInfo, "Groovy method execution failed: " + e.getMessage());
+                        }
+
+                    })
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .doOnSubscribe(sub -> log.info("Job started: {}", jobInfo.getJobId()))
+                    .doOnSuccess(j -> log.info("Job completed with status: {}", jobInfo.getStatus()))
+                    .doOnError(err -> log.error("Job failed: {}", jobInfo.getJobId(), err));
         });
     }
 
-    @Override
-    public Mono<JobInfo> executeJob(JobInfo jobInfo) {
-        return jobRunnerService.execute(jobInfo);
+
+    private JobInfo fail(JobInfo jobInfo, String message) {
+        jobInfo.setStatus(JobStatus.FAILED);
+        jobInfo.setErrorMessage(message);
+        jobInfo.setCompletedAt(Instant.now());
+        log.error(message);
+        return jobInfo;
     }
 
-
-    private JobInfo validateExecution(String jobPath) throws IOException {
-        String deploymentPath = new File(jobPath).getParent();
-        File deploymentYML = new File(deploymentPath, "deployment.yml");
-        if (!deploymentYML.exists()) {
-            throw new FileNotFoundException("deployment.yml not found at " + deploymentYML.getAbsolutePath());
-        }
-
-        log.error("File found: {}", deploymentYML.getAbsolutePath());
-        Yaml yaml = new Yaml();
-        try (InputStream inputStream = Files.newInputStream(deploymentYML.toPath())) {
-            Map<String, Object> config = yaml.load(inputStream);
-            if (config.get("status").equals("active")) {
-                JobInfo newJob = new JobInfo();
-                newJob.setPath(jobPath);
-                newJob.setStatus(JobStatus.ACTIVE);
-                newJob.setStartedAt(Instant.now());
-
-                return newJob;
-            } else if (config.get("status").equals("stop")) {
-                JobInfo newJob = new JobInfo();
-                newJob.setPath(jobPath);
-                newJob.setStatus(JobStatus.STOP);
-                newJob.setStartedAt(Instant.now());
-                return newJob;
-            }
-            return new JobInfo();
-        }
-    }
-
-    private List<String> scanGroovyFiles(File folder) {
-        List<String> result = new ArrayList<>();
-        File[] filesAndDirs = folder.listFiles();
-
-        if (filesAndDirs != null) {
-            for (File f : filesAndDirs) {
-                if (f.isDirectory()) {
-                    result.addAll(scanGroovyFiles(f));
-                } else if (f.isFile() && f.getName().endsWith(".groovy")) {
-                    result.add(f.getAbsolutePath());
-                }
-            }
-        }
-
-        return result;
-    }
 }

@@ -8,17 +8,19 @@ import reactor.core.scheduler.Schedulers;
 
 import java.io.File;
 
+
 @Service
 @Slf4j
 public class FolderServiceImpl implements FolderService {
     @Override
-    public Mono<Boolean> createFolder(String jobId) {
+    public Mono<Boolean> createFolder(String fileName) {
         return Mono.fromCallable(() -> {
-            File theDir = new File(jobId);
+            File theDir = new File(fileName);
             if (!theDir.exists()) {
                 return theDir.mkdirs();
             }
             return true;
+            //each  task run on parallel thread
         }).subscribeOn(Schedulers.boundedElastic());
 
     }

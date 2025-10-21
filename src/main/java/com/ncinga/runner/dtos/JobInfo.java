@@ -1,17 +1,17 @@
 package com.ncinga.runner.dtos;
 
-import com.ncinga.runner.JobInfoEntity;
 import com.ncinga.runner.enums.JobStatus;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
 import java.time.Instant;
 import java.util.Map;
 
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class JobInfo extends BaseClass<JobInfo, JobInfoEntity> {
+public class JobInfo {
     private String client;
     private JobStatus status;
     private Instant createAt = Instant.now();
