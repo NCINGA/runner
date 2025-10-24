@@ -75,7 +75,6 @@ public class JobServiceImpl implements JobService {
 
                         String deploymentStatus;
                         String groovyFileName;
-                        String className;
                         String methodName;
                         List<String> params;
                         try (InputStream inputStream = new FileInputStream(deploymentFile)) {
@@ -83,7 +82,6 @@ public class JobServiceImpl implements JobService {
                             Map<String, Object> config = yaml.load(inputStream);
                             deploymentStatus = (String) config.get("status");
                             groovyFileName = (String) config.get("file-name");
-                            className = (String) config.get("class-name");
                             methodName = (String) config.get("method-name");
                             params = (List<String>) config.get("params");
                             log.info("Deployment config -> status: {}, file-name: {}", deploymentStatus, groovyFileName);
@@ -133,7 +131,7 @@ public class JobServiceImpl implements JobService {
                                     : new Object[]{};
 
                             log.info("Invoking {}.{} with args={}",
-                                    className, methodName, Arrays.toString(args));
+                                    methodName, Arrays.toString(args));
 
                             Object result = groovyObject.invokeMethod(methodName, args);
 
