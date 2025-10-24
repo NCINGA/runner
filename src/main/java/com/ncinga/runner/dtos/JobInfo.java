@@ -23,7 +23,4 @@ public class JobInfo {
     private String errorMessage;
     private Instant completedAt;
     private Object result;
-    private String className;
-    private String method;
-    private Map<String, String> prams;
 }

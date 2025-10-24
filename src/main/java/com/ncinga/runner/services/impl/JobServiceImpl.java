@@ -21,6 +21,7 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 
 
@@ -74,11 +75,17 @@ public class JobServiceImpl implements JobService {
 
                         String deploymentStatus;
                         String groovyFileName;
+                        String className;
+                        String methodName;
+                        List<String> params;
                         try (InputStream inputStream = new FileInputStream(deploymentFile)) {
                             Yaml yaml = new Yaml();
                             Map<String, Object> config = yaml.load(inputStream);
                             deploymentStatus = (String) config.get("status");
                             groovyFileName = (String) config.get("file-name");
+                            className = (String) config.get("class-name");
+                            methodName = (String) config.get("method-name");
+                            params = (List<String>) config.get("params");
                             log.info("Deployment config -> status: {}, file-name: {}", deploymentStatus, groovyFileName);
                         } catch (Exception e) {
                             log.error("Failed to parse deployment.yml: {}", deploymentFile.getPath(), e);
@@ -121,14 +128,14 @@ public class JobServiceImpl implements JobService {
                             Class<?> groovyClass = groovyClassLoader.parseClass(groovyFile);
                             GroovyObject groovyObject = (GroovyObject) groovyClass.getDeclaredConstructor().newInstance();
 
-                            Object[] args = jobInfo.getPrams() != null && !jobInfo.getPrams().isEmpty()
-                                    ? jobInfo.getPrams().values().toArray()
+                            Object[] args = params != null && params.size() > 0
+                                    ? params.toArray()
                                     : new Object[]{};
 
                             log.info("Invoking {}.{} with args={}",
-                                    jobInfo.getClassName(), jobInfo.getMethod(), Arrays.toString(args));
+                                    className, methodName, Arrays.toString(args));
 
-                            Object result = groovyObject.invokeMethod(jobInfo.getMethod(), args);
+                            Object result = groovyObject.invokeMethod(methodName, args);
 
                             jobInfo.setStatus(JobStatus.COMPLETED);
                             jobInfo.setCompletedAt(Instant.now());
