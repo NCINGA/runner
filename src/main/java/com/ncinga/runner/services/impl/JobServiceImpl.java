@@ -2,6 +2,7 @@ package com.ncinga.runner.services.impl;
 
 import com.ncinga.runner.dtos.JobInfo;
 import com.ncinga.runner.enums.JobStatus;
+import com.ncinga.runner.services.JobNotifier;
 import com.ncinga.runner.services.JobService;
 import groovy.lang.GroovyClassLoader;
 import groovy.lang.GroovyObject;
@@ -22,7 +23,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Map;
 
-@Service
+
 @Slf4j
 @Data
 
@@ -30,7 +31,9 @@ import java.util.Map;
  * @params jobPath file path for job dir
  */
 
+@Service
 public class JobServiceImpl implements JobService {
+    private final JobNotifier notifier;
 
     @Value("${application.job.path}")
     private String jobPath;
@@ -39,20 +42,24 @@ public class JobServiceImpl implements JobService {
     @Override
     public Mono<JobInfo> execute(JobInfo jobInfo) {
         return Mono.defer(() -> {
+
             jobInfo.setStatus(JobStatus.RUNNING);
             jobInfo.setStartedAt(Instant.now());
-
+            notifier.notify(jobInfo);
             return Mono.fromCallable(() -> {
                         String jobId = jobInfo.getClient() + "-" + Instant.now();
                         File scriptPath = new File(jobPath + "/" + jobInfo.getClient());
                         jobInfo.setJobId(jobId);
                         jobInfo.setPath(scriptPath.getPath());
+                        notifier.notify(jobInfo);
                         log.info("Job [{}] - Path: {}", jobId, scriptPath.getAbsolutePath());
                         if (!scriptPath.exists()) {
+                            notifier.notify(jobInfo);
                             return fail(jobInfo, "File path not found: " + scriptPath);
                         }
                         File[] files = scriptPath.listFiles();
                         if (files == null || files.length == 0) {
+                            notifier.notify(jobInfo);
                             return fail(jobInfo, "Executable files not found in: " + scriptPath);
                         }
                         File deploymentFile = Arrays.stream(files)
@@ -61,6 +68,7 @@ public class JobServiceImpl implements JobService {
                                 .orElse(null);
 
                         if (deploymentFile == null) {
+                            notifier.notify(jobInfo);
                             return fail(jobInfo, "deployment.yml not found in: " + scriptPath);
                         }
 
@@ -74,6 +82,7 @@ public class JobServiceImpl implements JobService {
                             log.info("Deployment config -> status: {}, file-name: {}", deploymentStatus, groovyFileName);
                         } catch (Exception e) {
                             log.error("Failed to parse deployment.yml: {}", deploymentFile.getPath(), e);
+                            notifier.notify(jobInfo);
                             return fail(jobInfo, "Failed to parse deployment.yml: " + e.getMessage());
                         }
 
@@ -81,6 +90,7 @@ public class JobServiceImpl implements JobService {
                             jobInfo.setStatus(JobStatus.SKIPPED);
                             jobInfo.setErrorMessage("Job is inactive (status: " + deploymentStatus + ")");
                             log.info("Job [{}] skipped (inactive)", jobId);
+                            notifier.notify(jobInfo);
                             return jobInfo;
                         }
 
@@ -90,6 +100,7 @@ public class JobServiceImpl implements JobService {
                                 .orElse(null);
 
                         if (groovyFile == null) {
+                            notifier.notify(jobInfo);
                             return fail(jobInfo, "Groovy file not found: " + groovyFileName);
                         }
                         File libDir = new File("libs");
@@ -123,20 +134,31 @@ public class JobServiceImpl implements JobService {
                             jobInfo.setCompletedAt(Instant.now());
                             if (result != null) {
                                 jobInfo.setResult(result);
+                                notifier.notify(jobInfo);
                                 log.info("Groovy method result: {}", result);
                             }
                             return jobInfo;
 
                         } catch (Exception e) {
                             log.error("Groovy method execution failed: {}", groovyFile.getPath(), e);
+                            notifier.notify(jobInfo);
                             return fail(jobInfo, "Groovy method execution failed: " + e.getMessage());
                         }
 
                     })
                     .subscribeOn(Schedulers.boundedElastic())
-                    .doOnSubscribe(sub -> log.info("Job started: {}", jobInfo.getJobId()))
-                    .doOnSuccess(j -> log.info("Job completed with status: {}", jobInfo.getStatus()))
-                    .doOnError(err -> log.error("Job failed: {}", jobInfo.getJobId(), err));
+                    .doOnSubscribe(sub -> {
+                        log.info("Job started: {}", jobInfo.getJobId());
+                        notifier.notify(jobInfo);
+                    })
+                    .doOnSuccess(j -> {
+                        log.info("Job completed with status: {}", jobInfo.getStatus());
+                        notifier.notify(jobInfo);
+                    })
+                    .doOnError(err -> {
+                        log.error("Job failed: {}", jobInfo.getJobId(), err);
+                        notifier.notify(jobInfo);
+                    });
         });
     }
 
